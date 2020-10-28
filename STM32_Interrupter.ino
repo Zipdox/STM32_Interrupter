@@ -2,6 +2,7 @@
 
 MIDI_CREATE_DEFAULT_INSTANCE();
 
+// Constants
 #define sampling_rate 96000
 #define tuning_pitch 440
 #define max_playing_notes 5
@@ -11,7 +12,7 @@ MIDI_CREATE_DEFAULT_INSTANCE();
 //#define min_duty_cycle 0.005
 //#define max_duty_cycle 0.025
 
-
+// Lookup tables for fast calculation
 uint16_t period_lut[128];
 uint32_t period_x10000_lut[128];
 uint8_t velocity_lut[128] = {
@@ -43,16 +44,27 @@ typedef struct {
     int been_on;
 } Note;
 
+// Arrays for playing notes and channel pitchbends
 Note playing_notes[max_playing_notes];
+int channels_pitchbend[16] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
 
 void handleNoteOn(byte channel, byte pitch, byte velocity){
     for(int i = 0; i < max_playing_notes; i++){
         if(playing_notes[i].on_time != 0) continue;
-        uint16_t period = note_period(pitch);
-        int on_time = period/velocity_lut[velocity];
-        if(on_time < min_on_time) on_time = min_on_time;
-        if(on_time > max_on_time) on_time = max_on_time;
-        playing_notes[i] = {channel, pitch, velocity, on_time, period-on_time, 0};
+        if(channels_pitchbend[channel-1] == 0){
+            uint16_t period = note_period(pitch);
+            int on_time = period/velocity_lut[velocity];
+            if(on_time < min_on_time) on_time = min_on_time;
+            if(on_time > max_on_time) on_time = max_on_time;
+            playing_notes[i] = {channel, pitch, velocity, on_time, period-on_time, 0};
+        }else{
+            uint32_t note_period_x10000 = period_x10000_lut[pitch];
+            uint16_t period = note_period_x10000/pitchbend_lut[(channels_pitchbend[channel-1]+8192)/64];
+            int on_time = period/velocity_lut[velocity];
+            if(on_time < min_on_time) on_time = min_on_time;
+            if(on_time > max_on_time) on_time = max_on_time;
+            playing_notes[i] = {channel, pitch, velocity, on_time, period-on_time, 0};
+        }
         break;
     }
 }
@@ -65,6 +77,8 @@ void handleNoteOff(byte channel, byte pitch, byte velocity){
 
 void handlePitchBend(byte channel, int bend){
     for(int i = 0; i < max_playing_notes; i++){
+        channels_pitchbend[channel-1] = bend;
+
         if(playing_notes[i].on_time == 0) continue;
         if(playing_notes[i].channel != channel) continue;
         
@@ -82,12 +96,14 @@ void handlePitchBend(byte channel, int bend){
 }
 
 void sample(void){
+    // Increment the ontime for all playing notes
     for(int i = 0; i < max_playing_notes; i++){
         if(playing_notes[i].on_time != 0) playing_notes[i].been_on++;
     }
 }
 
 void handleStop(){
+    // Turn off all notes when we receive a MIDI stop message
     for(int i = 0; i < max_playing_notes; i++){
         playing_notes[i].on_time = 0;
     }
@@ -133,13 +149,15 @@ void setup(){
 }
 
 void loop(){
+    // Read MIDI data if available
     MIDI.read();
+    // Iterate through notes to check if they should be switching to high or to low and check if any are high
     byte play = 0x0;
     for(int i = 0; i < max_playing_notes; i++){
         if(playing_notes[i].on_time == 0) continue;
         if(playing_notes[i].been_on > playing_notes[i].on_time) playing_notes[i].been_on = -playing_notes[i].off_time;
         if(playing_notes[i].been_on >= 0) play = 0x1;
     }
+    // Write the output high if any of the pins were high, low if not
     digitalWrite(PB9, play);
-
 }
